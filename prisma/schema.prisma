@@ -1,0 +1,235 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
+  extensions = [pgcrypto, vector]
+}
+
+model Tenant {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug              String              @unique @db.VarChar(80)
+  nomeEmpresa       String              @map("nome_empresa") @db.VarChar(200)
+  ownerEmail        String              @map("owner_email") @db.VarChar(200)
+  plan              String              @default("free") @db.VarChar(20)
+  isActive          Boolean             @default(true) @map("is_active")
+  createdAt         DateTime            @default(now()) @map("created_at")
+
+  metaTokens        MetaToken[]
+  whatsappInstances WhatsappInstance[]
+  agentConfig       AgentConfig?
+  knowledgeBase     KnowledgeBase[]
+  campaigns         Campaign[]
+  contacts          Contact[]
+  conversations     Conversation[]
+  conversationLocks ConversationLock[]
+  leads             Lead[]
+  auditLogs         AuditLog[]
+
+  @@index([ownerEmail])
+  @@map("lia_tenants")
+}
+
+model MetaToken {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  igPageId          String    @unique @map("ig_page_id") @db.VarChar(50)
+  igUsername        String?   @map("ig_username") @db.VarChar(100)
+  accessToken       String    @map("access_token")
+  tokenType         String    @default("long_lived") @map("token_type") @db.VarChar(20)
+  expiresAt         DateTime? @map("expires_at")
+  lastRefreshedAt   DateTime? @map("last_refreshed_at")
+  status            String    @default("active") @db.VarChar(20)
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  @@index([tenantId])
+  @@index([status, expiresAt])
+  @@map("lia_meta_tokens")
+}
+
+model WhatsappInstance {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  label           String?   @db.VarChar(100)
+  uazapiUrl       String?   @map("uazapi_url") @db.VarChar(255)
+  instanceToken   String?   @map("instance_token") @db.VarChar(255)
+  instanceName    String?   @map("instance_name") @db.VarChar(255)
+  status          String    @default("disconnected") @db.VarChar(20)
+  lastQrAt        DateTime? @map("last_qr_at")
+  disconnectedAt  DateTime? @map("disconnected_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@map("lia_whatsapp_instances")
+}
+
+model AgentConfig {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId              String   @unique @map("tenant_id") @db.Uuid
+  tenant                Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agentName             String   @map("agent_name") @db.VarChar(100)
+  businessDescription   String   @map("business_description")
+  communicationStyle    String   @default("consultivo") @map("communication_style") @db.VarChar(30)
+  personality           String?
+  extraRules            String?  @map("extra_rules")
+  handoffPhone          String?  @map("handoff_phone") @db.VarChar(20)
+  handoffMessage        String?  @map("handoff_message")
+  version               Int      @default(1)
+  updatedAt             DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("lia_agent_configs")
+}
+
+model KnowledgeBase {
+  id          String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String                       @map("tenant_id") @db.Uuid
+  tenant      Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  source      String                       @db.VarChar(255)
+  chunkIndex  Int                          @map("chunk_index")
+  content     String
+  embedding   Unsupported("vector(1536)")?
+  createdAt   DateTime                     @default(now()) @map("created_at")
+
+  @@index([tenantId])
+  @@map("lia_knowledge_base")
+}
+
+model Campaign {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name        String    @db.VarChar(150)
+  keyword     String    @db.VarChar(80)
+  matchMode   String    @default("contains") @map("match_mode") @db.VarChar(20)
+  messageText String?   @map("message_text")
+  assetType   String    @default("none") @map("asset_type") @db.VarChar(20)
+  assetUrl    String?   @map("asset_url")
+  ctaLink     String?   @map("cta_link")
+  active      Boolean   @default(true)
+  startsAt    DateTime? @map("starts_at")
+  endsAt      DateTime? @map("ends_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  leads       Lead[]
+
+  @@index([tenantId, active])
+  @@index([tenantId, keyword])
+  @@map("lia_campaigns")
+}
+
+model Contact {
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String         @map("tenant_id") @db.Uuid
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  igUserId      String?        @map("ig_user_id") @db.VarChar(50)
+  igUsername    String?        @map("ig_username") @db.VarChar(100)
+  phone         String?        @db.VarChar(20)
+  name          String?        @db.VarChar(200)
+  email         String?        @db.VarChar(200)
+  sourceChannel String?        @map("source_channel") @db.VarChar(20)
+  firstSeenAt   DateTime       @default(now()) @map("first_seen_at")
+  lastSeenAt    DateTime       @default(now()) @map("last_seen_at")
+  tags          Json           @default("[]")
+  conversations Conversation[]
+  leads         Lead[]
+
+  @@unique([tenantId, igUserId])
+  @@unique([tenantId, phone])
+  @@index([tenantId])
+  @@map("lia_contacts")
+}
+
+model Conversation {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactId      String    @map("contact_id") @db.Uuid
+  contact        Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  channel        String    @db.VarChar(20)
+  status         String    @default("active") @db.VarChar(20)
+  sessionId      String    @unique @map("session_id") @db.VarChar(100)
+  startedAt      DateTime  @default(now()) @map("started_at")
+  lastMessageAt  DateTime  @default(now()) @map("last_message_at")
+  metadata       Json      @default("{}")
+  messages       Message[]
+
+  @@index([tenantId, status])
+  @@index([contactId])
+  @@map("lia_conversations")
+}
+
+model Message {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  conversationId String       @map("conversation_id") @db.Uuid
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  direction      String       @db.VarChar(10)
+  senderType     String       @map("sender_type") @db.VarChar(20)
+  contentType    String       @default("text") @map("content_type") @db.VarChar(20)
+  content        String?
+  mediaUrl       String?      @map("media_url")
+  externalMsgId  String?      @map("external_msg_id") @db.VarChar(200)
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@index([conversationId, createdAt])
+  @@map("lia_messages")
+}
+
+model ConversationLock {
+  lockKey   String   @id @map("lock_key") @db.VarChar(200)
+  tenantId  String   @map("tenant_id") @db.Uuid
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactId String?  @map("contact_id") @db.Uuid
+  channel   String?  @db.VarChar(20)
+  expiresAt DateTime @map("expires_at")
+  lockedAt  DateTime @default(now()) @map("locked_at")
+
+  @@index([tenantId])
+  @@index([expiresAt])
+  @@map("lia_conversation_locks")
+}
+
+model N8nChatHistory {
+  id        Int    @id @default(autoincrement())
+  sessionId String @map("session_id") @db.VarChar(100)
+  message   Json
+
+  @@index([sessionId])
+  @@map("lia_n8n_chat_histories")
+}
+
+model Lead {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactId   String    @map("contact_id") @db.Uuid
+  contact     Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  campaignId  String?   @map("campaign_id") @db.Uuid
+  campaign    Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  stage       String    @default("captured") @db.VarChar(30)
+  capturedAt  DateTime  @default(now()) @map("captured_at")
+  metadata    Json      @default("{}")
+
+  @@index([tenantId, stage])
+  @@index([campaignId])
+  @@map("lia_leads")
+}
+
+model AuditLog {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userEmail  String   @map("user_email") @db.VarChar(200)
+  action     String   @db.VarChar(100)
+  target     String?  @db.VarChar(200)
+  diff       Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, createdAt])
+  @@map("lia_audit_log")
+}
