@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireSession } from '@/lib/auth';
 
-const SUBSCRIBED_FIELDS = 'messages,messaging_postbacks,messaging_seen';
+const SUBSCRIBED_FIELDS = 'messages,messaging_postbacks,message_reads,message_reactions';
 
 export async function POST(
   _req: NextRequest,
