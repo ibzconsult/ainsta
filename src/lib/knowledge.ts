@@ -1,6 +1,15 @@
 import OpenAI from 'openai';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Lazy-init — evita crash no `next build` quando o collect-page-data
+// executa o módulo sem OPENAI_API_KEY presente no ambiente de build.
+let _openai: OpenAI | null = null;
+function getOpenAI(): OpenAI {
+  if (_openai) return _openai;
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY não configurada');
+  _openai = new OpenAI({ apiKey });
+  return _openai;
+}
 
 export function chunkText(text: string, chunkSize = 800, overlap = 120): string[] {
   const clean = text.replace(/\s+/g, ' ').trim();
@@ -22,7 +31,7 @@ export function chunkText(text: string, chunkSize = 800, overlap = 120): string[
 
 export async function embed(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
-  const response = await openai.embeddings.create({
+  const response = await getOpenAI().embeddings.create({
     model: 'text-embedding-3-small',
     input: texts,
   });

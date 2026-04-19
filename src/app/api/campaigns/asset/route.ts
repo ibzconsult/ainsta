@@ -47,6 +47,6 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ url: data.publicUrl, assetType, path });
 }
 
-export const config = {
-  api: { bodyParser: false },
-};
+// Route Handlers no App Router não usam `api.bodyParser` (isso é Pages Router).
+// formData() já lida com multipart nativamente, sem config extra.
+export const runtime = 'nodejs';
