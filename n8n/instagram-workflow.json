@@ -1,0 +1,456 @@
+{
+  "name": "Lia SaaS — Instagram",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lia-saas-instagram",
+        "responseMode": "onReceived",
+        "responseCode": 200,
+        "options": { "rawBody": false }
+      },
+      "id": "webhook-ig",
+      "name": "Webhook Instagram",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "lia-saas-instagram"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extrai DMs do payload Meta. Explode em 1 item por mensagem.\nconst body = $input.first().json.body ?? $input.first().json;\nconst out = [];\nfor (const entry of body.entry ?? []) {\n  const igPageId = String(entry.id ?? '');\n  for (const m of entry.messaging ?? []) {\n    if (!m.message) continue;\n    out.push({\n      json: {\n        igPageId,\n        senderId: String(m.sender?.id ?? ''),\n        recipientId: String(m.recipient?.id ?? ''),\n        text: String(m.message.text ?? '').trim(),\n        messageId: String(m.message.mid ?? ''),\n        isEcho: m.message.is_echo === true,\n        timestamp: m.timestamp || Date.now()\n      }\n    });\n  }\n}\nreturn out.length ? out : [{ json: { _skip: true } }];"
+      },
+      "id": "extract-payload",
+      "name": "Extract payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "combinator": "and",
+          "conditions": [
+            { "id": "g1", "leftValue": "={{ $json.isEcho }}", "rightValue": true, "operator": { "type": "boolean", "operation": "notEquals" } },
+            { "id": "g2", "leftValue": "={{ $json.text }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty" } },
+            { "id": "g3", "leftValue": "={{ $json.senderId }}", "rightValue": "={{ $json.recipientId }}", "operator": { "type": "string", "operation": "notEquals" } }
+          ]
+        },
+        "options": {}
+      },
+      "id": "if-guardrails",
+      "name": "IF Guardrails",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  t.id AS tenant_id,\n  t.slug,\n  t.nome_empresa,\n  mt.access_token,\n  mt.ig_page_id,\n  ac.agent_name,\n  ac.business_description,\n  ac.communication_style,\n  ac.personality,\n  ac.extra_rules,\n  ac.handoff_phone,\n  ac.handoff_message\nFROM lia_meta_tokens mt\nJOIN lia_tenants t ON mt.tenant_id = t.id\nLEFT JOIN lia_agent_configs ac ON t.id = ac.tenant_id\nWHERE mt.ig_page_id = $1\n  AND mt.status = 'active'\n  AND t.is_active = true\nLIMIT 1;",
+        "options": {
+          "queryReplacement": "={{ $json.igPageId }}"
+        }
+      },
+      "id": "pg-tenant-lookup",
+      "name": "Pg — Tenant lookup",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [960, 300],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "combinator": "and",
+          "conditions": [
+            { "id": "t1", "leftValue": "={{ $json.tenant_id }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty" } }
+          ]
+        },
+        "options": {}
+      },
+      "id": "if-tenant-valid",
+      "name": "IF Tenant válido",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO lia_contacts (tenant_id, ig_user_id, source_channel)\nVALUES ($1::uuid, $2, 'instagram_dm')\nON CONFLICT (tenant_id, ig_user_id) DO UPDATE\n  SET last_seen_at = NOW()\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ $json.tenant_id }},{{ $('Extract payload').item.json.senderId }}"
+        }
+      },
+      "id": "pg-upsert-contact",
+      "name": "Pg — Upsert contact",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1440, 300],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO lia_conversations (tenant_id, contact_id, channel, session_id)\nVALUES ($1::uuid, $2::uuid, 'instagram_dm', $3)\nON CONFLICT (session_id) DO UPDATE\n  SET last_message_at = NOW()\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ $('Pg — Tenant lookup').item.json.tenant_id }},{{ $json.id }},ig:{{ $('Pg — Tenant lookup').item.json.tenant_id }}:{{ $('Extract payload').item.json.senderId }}"
+        }
+      },
+      "id": "pg-upsert-conversation",
+      "name": "Pg — Upsert conversation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1680, 300],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO lia_messages (conversation_id, direction, sender_type, content_type, content, external_msg_id)\nVALUES ($1::uuid, 'inbound', 'user', 'text', $2, $3)\nRETURNING id, created_at;",
+        "options": {
+          "queryReplacement": "={{ $json.id }},{{ $('Extract payload').item.json.text.replace(/,/g, '\\\\,') }},{{ $('Extract payload').item.json.messageId }}"
+        }
+      },
+      "id": "pg-insert-inbound",
+      "name": "Pg — Insert inbound",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1920, 300],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, keyword, match_mode, message_text, asset_type, asset_url, cta_link\nFROM lia_campaigns\nWHERE tenant_id = $1::uuid\n  AND active = true\n  AND (starts_at IS NULL OR starts_at <= NOW())\n  AND (ends_at IS NULL OR ends_at >= NOW());",
+        "options": {
+          "queryReplacement": "={{ $('Pg — Tenant lookup').item.json.tenant_id }}"
+        }
+      },
+      "id": "pg-active-campaigns",
+      "name": "Pg — Active campaigns",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2160, 300],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verifica se o texto do lead bate alguma keyword ativa. Primeiro match vence.\nconst campaigns = $input.all().map(i => i.json).filter(c => c.keyword);\nconst text = ($('Extract payload').first().json.text || '').toLowerCase().trim();\nlet matched = null;\nfor (const c of campaigns) {\n  const kw = String(c.keyword).toLowerCase().trim();\n  if (!kw) continue;\n  const mode = c.match_mode || 'contains';\n  const hit = mode === 'exact' ? text === kw : text.includes(kw);\n  if (hit) { matched = c; break; }\n}\nreturn [{\n  json: {\n    ...$('Extract payload').first().json,\n    conversationId: $('Pg — Upsert conversation').first().json.id,\n    matchedCampaign: matched,\n    hasMatch: !!matched\n  }\n}];"
+      },
+      "id": "code-match-campaign",
+      "name": "Match campaign",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2400, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "combinator": "and",
+          "conditions": [
+            { "id": "c1", "leftValue": "={{ $json.hasMatch }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
+          ]
+        },
+        "options": {}
+      },
+      "id": "if-campaign",
+      "name": "IF Campaign match",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2640, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v22.0/{{ $('Pg — Tenant lookup').item.json.ig_page_id }}/messages",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "access_token", "value": "={{ $('Pg — Tenant lookup').item.json.access_token }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"recipient\": { \"id\": {{ JSON.stringify($json.senderId) }} },\n  \"message\": {{ $json.matchedCampaign.asset_url ? ('{\"attachment\":{\"type\":\"' + ($json.matchedCampaign.asset_type === 'video' ? 'video' : 'image') + '\",\"payload\":{\"url\":' + JSON.stringify($json.matchedCampaign.asset_url) + ',\"is_reusable\":false}}}') : ('{\"text\":' + JSON.stringify('🤖 ' + ($json.matchedCampaign.message_text || '')) + '}') }}\n}",
+        "options": {}
+      },
+      "id": "http-send-asset",
+      "name": "Graph — Send asset",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2880, 100],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH lead_insert AS (\n  INSERT INTO lia_leads (tenant_id, contact_id, campaign_id, stage, metadata)\n  VALUES ($1::uuid, $2::uuid, $3::uuid, 'captured', jsonb_build_object('channel','instagram_dm'))\n  RETURNING id\n)\nINSERT INTO lia_messages (conversation_id, direction, sender_type, content_type, content)\nVALUES ($4::uuid, 'outbound', 'agent', 'text', $5)\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ $('Pg — Tenant lookup').item.json.tenant_id }},{{ $('Pg — Upsert contact').item.json.id }},{{ $('Match campaign').item.json.matchedCampaign.id }},{{ $('Pg — Upsert conversation').item.json.id }},{{ '🤖 ' + ($('Match campaign').item.json.matchedCampaign.message_text || '(asset enviado)') }}"
+        }
+      },
+      "id": "pg-log-campaign",
+      "name": "Pg — Log lead + outbound",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [3120, 100],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      }
+    },
+    {
+      "parameters": { "amount": 15, "unit": "seconds" },
+      "id": "wait-debounce",
+      "name": "Wait 15s (debounce)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2880, 500],
+      "webhookId": "lia-ig-debounce"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT external_msg_id, created_at\nFROM lia_messages\nWHERE conversation_id = $1::uuid\n  AND direction = 'inbound'\nORDER BY created_at DESC\nLIMIT 1;",
+        "options": {
+          "queryReplacement": "={{ $('Pg — Upsert conversation').item.json.id }}"
+        }
+      },
+      "id": "pg-latest-check",
+      "name": "Pg — Latest inbound",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [3120, 500],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "combinator": "and",
+          "conditions": [
+            { "id": "l1", "leftValue": "={{ $json.external_msg_id }}", "rightValue": "={{ $('Extract payload').item.json.messageId }}", "operator": { "type": "string", "operation": "equals" } }
+          ]
+        },
+        "options": {}
+      },
+      "id": "if-is-latest",
+      "name": "IF É a última msg",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3360, 500]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT content, created_at\nFROM lia_messages\nWHERE conversation_id = $1::uuid\n  AND direction = 'inbound'\n  AND created_at > COALESCE(\n    (SELECT created_at FROM lia_messages\n     WHERE conversation_id = $1::uuid AND direction = 'outbound'\n     ORDER BY created_at DESC LIMIT 1),\n    TIMESTAMP '1970-01-01'\n  )\nORDER BY created_at ASC;",
+        "options": {
+          "queryReplacement": "={{ $('Pg — Upsert conversation').item.json.id }}"
+        }
+      },
+      "id": "pg-fetch-buffered",
+      "name": "Pg — Fetch buffered",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [3600, 500],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Port pt-BR de lib/prompt-composer.ts — monta system prompt + consolida mensagens bufferizadas.\nconst tenant = $('Pg — Tenant lookup').first().json;\nconst campaigns = $('Pg — Active campaigns').all().map(i => i.json);\nconst buffered = $input.all().map(i => i.json);\n\nconst consolidatedUserText = buffered\n  .map(m => m.content)\n  .filter(Boolean)\n  .join('\\n')\n  .trim();\n\nconst STATIC_CORE = `Você é um agente de atendimento para Instagram Direct e WhatsApp.\n\nREGRAS NÃO-NEGOCIÁVEIS:\n- Toda mensagem sua começa com o emoji 🤖 (sinaliza origem IA pro sistema de takeover humano).\n- Respostas curtas e claras, no máximo 2 parágrafos. Nada de parede de texto.\n- Não prometa resultados específicos (\"vou garantir X\", \"em Y dias você terá Z\"). Fale do processo, não do futuro.\n- Não peça dados sensíveis (CPF, senha, cartão).\n- Se o lead perguntar algo fora do escopo do negócio, redirecione educadamente.\n- Se houver campanha ativa e o lead enviar a palavra-chave, você DEVE retornar o asset/mensagem configurado.\n- Se o lead demonstrar interesse real ou pedir atendimento humano, chame a tool send_whatsapp_invite para oferecer continuidade no WhatsApp.\n- Use a tool search_knowledge SEMPRE que a pergunta for sobre o negócio, produtos, preços ou procedimentos.\n\nFORMATO:\n- Parágrafos curtos separados por linha em branco.\n- Emojis com moderação, só quando agregam (🎯 📅 ✅).\n- Nunca use markdown (**, *, #) — Instagram não renderiza.`;\n\nconst activeCampaigns = campaigns.length\n  ? campaigns.map((c, i) => `  ${i+1}. Palavra-chave: \"${c.keyword}\"\\n     Mensagem: ${c.message_text ?? '(enviar asset direto)'}\\n     Asset: ${c.asset_type} ${c.asset_url ? '→ ' + c.asset_url : ''}\\n     CTA: ${c.cta_link ?? '—'}`).join('\\n')\n  : '  (nenhuma campanha ativa no momento)';\n\nconst channelNote = 'Canal atual: Instagram Direct. Use linguagem próxima, estilo DM.';\n\nconst handoff = tenant.handoff_phone\n  ? `HANDOFF WHATSAPP:\\n- Número do cliente: ${tenant.handoff_phone}\\n- Mensagem pré-preenchida: ${tenant.handoff_message ?? 'Oi! Vim do Instagram.'}`\n  : 'HANDOFF WHATSAPP: (não configurado — não ofereça migração para WhatsApp)';\n\nconst systemMessage = `${STATIC_CORE}\\n\\n—\\n\\nIDENTIDADE DESTE AGENTE:\\n- Nome: ${tenant.agent_name || 'Assistente'}\\n- Estilo de comunicação: ${tenant.communication_style || 'consultivo'}\\n- Personalidade: ${tenant.personality ?? '—'}\\n\\nNEGÓCIO QUE VOCÊ ATENDE:\\n${tenant.business_description || '(descrição não configurada)'}\\n\\n${channelNote}\\n\\nCAMPANHAS ATIVAS:\\n${activeCampaigns}\\n\\n${handoff}\\n\\n${tenant.extra_rules ? 'REGRAS EXTRAS DO CLIENTE:\\n' + tenant.extra_rules : ''}`.trim();\n\nreturn [{\n  json: {\n    systemMessage,\n    userInput: consolidatedUserText,\n    sessionId: `ig:${tenant.tenant_id}:${$('Extract payload').first().json.senderId}`,\n    tenantId: tenant.tenant_id,\n    handoffPhone: tenant.handoff_phone || '',\n    handoffMessage: tenant.handoff_message || 'Oi! Vim do Instagram.'\n  }\n}];"
+      },
+      "id": "code-compose-prompt",
+      "name": "Compose prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3840, 500]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.userInput }}",
+        "options": {
+          "systemMessage": "={{ $json.systemMessage }}"
+        }
+      },
+      "id": "ai-agent",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [4080, 500]
+    },
+    {
+      "parameters": {
+        "model": { "__rl": true, "value": "gpt-4.1-mini", "mode": "list", "cachedResultName": "gpt-4.1-mini" },
+        "options": { "temperature": 0.6 }
+      },
+      "id": "chat-model",
+      "name": "Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [3960, 760],
+      "credentials": {
+        "openAiApi": { "id": "REPLACE_WITH_OPENAI_CRED_ID", "name": "OpenAI Lia SaaS" }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Compose prompt').item.json.sessionId }}",
+        "tableName": "lia_n8n_chat_histories",
+        "contextWindowLength": 20
+      },
+      "id": "memory-postgres",
+      "name": "Memory — Postgres",
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.3,
+      "position": [4160, 760],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      }
+    },
+    {
+      "parameters": {
+        "name": "search_knowledge",
+        "description": "Busca informações na base de conhecimento do negócio (produtos, preços, procedimentos, FAQs). Use SEMPRE que a pergunta for factual sobre o cliente. Parâmetro: query (pergunta do usuário em pt-br).",
+        "workflowId": "REPLACE_WITH_SUBWORKFLOW_ID",
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "query": "={{ $fromAI('query', 'Pergunta do usuário em pt-br sobre o negócio', 'string') }}",
+            "tenantId": "={{ $('Compose prompt').item.json.tenantId }}"
+          },
+          "schema": [
+            { "id": "query", "displayName": "query", "required": true, "type": "string" },
+            { "id": "tenantId", "displayName": "tenantId", "required": true, "type": "string" }
+          ]
+        }
+      },
+      "id": "tool-search-knowledge",
+      "name": "Tool — search_knowledge",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [4360, 760]
+    },
+    {
+      "parameters": {
+        "name": "send_whatsapp_invite",
+        "description": "Gera um convite para o lead continuar o atendimento no WhatsApp. Retorna um link wa.me clicável. Use quando o lead demonstrar interesse real ou pedir pra falar com humano. Só funciona se handoff estiver configurado.",
+        "jsCode": "const phone = $('Compose prompt').first().json.handoffPhone;\nconst msg = $('Compose prompt').first().json.handoffMessage || 'Oi! Vim do Instagram.';\nif (!phone) return 'Handoff WhatsApp não está configurado para este negócio.';\nconst clean = String(phone).replace(/\\D/g, '');\nconst link = `https://wa.me/${clean}?text=${encodeURIComponent(msg)}`;\nreturn `Link de convite gerado com sucesso. Envie exatamente este link ao usuário: ${link}`;"
+      },
+      "id": "tool-whatsapp-invite",
+      "name": "Tool — send_whatsapp_invite",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.2,
+      "position": [4560, 760]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Garante prefixo 🤖 e limita parágrafos\nlet text = String($input.first().json.output ?? $input.first().json.text ?? '').trim();\nif (!text) text = 'Desculpe, não entendi. Pode me dizer de outro jeito?';\nif (!text.startsWith('🤖')) text = '🤖 ' + text;\nreturn [{ json: { text } }];"
+      },
+      "id": "format-prefix",
+      "name": "Format prefix",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4320, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v22.0/{{ $('Pg — Tenant lookup').item.json.ig_page_id }}/messages",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "access_token", "value": "={{ $('Pg — Tenant lookup').item.json.access_token }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"recipient\": { \"id\": {{ JSON.stringify($('Extract payload').item.json.senderId) }} },\n  \"message\": { \"text\": {{ JSON.stringify($json.text) }} }\n}",
+        "options": {}
+      },
+      "id": "http-graph-send",
+      "name": "Graph — Send reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4560, 500],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO lia_messages (conversation_id, direction, sender_type, content_type, content)\nVALUES ($1::uuid, 'outbound', 'agent', 'text', $2)\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ $('Pg — Upsert conversation').item.json.id }},{{ $('Format prefix').item.json.text }}"
+        }
+      },
+      "id": "pg-insert-outbound",
+      "name": "Pg — Insert outbound",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [4800, 500],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Instagram": { "main": [[{ "node": "Extract payload", "type": "main", "index": 0 }]] },
+    "Extract payload": { "main": [[{ "node": "IF Guardrails", "type": "main", "index": 0 }]] },
+    "IF Guardrails": { "main": [[{ "node": "Pg — Tenant lookup", "type": "main", "index": 0 }], []] },
+    "Pg — Tenant lookup": { "main": [[{ "node": "IF Tenant válido", "type": "main", "index": 0 }]] },
+    "IF Tenant válido": { "main": [[{ "node": "Pg — Upsert contact", "type": "main", "index": 0 }], []] },
+    "Pg — Upsert contact": { "main": [[{ "node": "Pg — Upsert conversation", "type": "main", "index": 0 }]] },
+    "Pg — Upsert conversation": { "main": [[{ "node": "Pg — Insert inbound", "type": "main", "index": 0 }]] },
+    "Pg — Insert inbound": { "main": [[{ "node": "Pg — Active campaigns", "type": "main", "index": 0 }]] },
+    "Pg — Active campaigns": { "main": [[{ "node": "Match campaign", "type": "main", "index": 0 }]] },
+    "Match campaign": { "main": [[{ "node": "IF Campaign match", "type": "main", "index": 0 }]] },
+    "IF Campaign match": {
+      "main": [
+        [{ "node": "Graph — Send asset", "type": "main", "index": 0 }],
+        [{ "node": "Wait 15s (debounce)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Graph — Send asset": { "main": [[{ "node": "Pg — Log lead + outbound", "type": "main", "index": 0 }]] },
+    "Wait 15s (debounce)": { "main": [[{ "node": "Pg — Latest inbound", "type": "main", "index": 0 }]] },
+    "Pg — Latest inbound": { "main": [[{ "node": "IF É a última msg", "type": "main", "index": 0 }]] },
+    "IF É a última msg": { "main": [[{ "node": "Pg — Fetch buffered", "type": "main", "index": 0 }], []] },
+    "Pg — Fetch buffered": { "main": [[{ "node": "Compose prompt", "type": "main", "index": 0 }]] },
+    "Compose prompt": { "main": [[{ "node": "AI Agent", "type": "main", "index": 0 }]] },
+    "AI Agent": { "main": [[{ "node": "Format prefix", "type": "main", "index": 0 }]] },
+    "Format prefix": { "main": [[{ "node": "Graph — Send reply", "type": "main", "index": 0 }]] },
+    "Graph — Send reply": { "main": [[{ "node": "Pg — Insert outbound", "type": "main", "index": 0 }]] },
+    "Chat Model": { "ai_languageModel": [[{ "node": "AI Agent", "type": "ai_languageModel", "index": 0 }]] },
+    "Memory — Postgres": { "ai_memory": [[{ "node": "AI Agent", "type": "ai_memory", "index": 0 }]] },
+    "Tool — search_knowledge": { "ai_tool": [[{ "node": "AI Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool — send_whatsapp_invite": { "ai_tool": [[{ "node": "AI Agent", "type": "ai_tool", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {},
+  "tags": [{ "name": "lia-saas" }]
+}

@@ -1,0 +1,207 @@
+{
+  "name": "Lia SaaS — Meta Token Refresh (cron)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "cronExpression", "expression": "0 3 * * *" }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Cron — 3:00 UTC diário",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  id,\n  tenant_id,\n  ig_page_id,\n  ig_username,\n  access_token,\n  expires_at,\n  last_refreshed_at,\n  status\nFROM lia_meta_tokens\nWHERE status = 'active'\n  AND (\n    expires_at IS NULL\n    OR expires_at < NOW() + INTERVAL '10 days'\n  );",
+        "options": {}
+      },
+      "id": "pg-find-expiring",
+      "name": "Pg — Find expiring tokens",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [480, 300],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "combinator": "and",
+          "conditions": [
+            { "id": "has1", "leftValue": "={{ $json.id }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty" } }
+          ]
+        },
+        "options": {}
+      },
+      "id": "if-has-tokens",
+      "name": "IF há tokens",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-batches",
+      "name": "Split (1 por vez)",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [960, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://graph.facebook.com/v22.0/oauth/access_token",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "grant_type", "value": "fb_exchange_token" },
+            { "name": "client_id", "value": "={{ $env.META_APP_ID }}" },
+            { "name": "client_secret", "value": "={{ $env.META_APP_SECRET }}" },
+            { "name": "fb_exchange_token", "value": "={{ $json.access_token }}" }
+          ]
+        },
+        "options": {
+          "response": { "response": { "neverError": true, "responseFormat": "json" } }
+        }
+      },
+      "id": "http-refresh",
+      "name": "Graph — Exchange token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse resposta do /oauth/access_token. Retorna { ok, newToken, expiresInSec, errorMsg }.\nconst resp = $input.first().json;\nconst tokenRow = $('Split (1 por vez)').item.json;\n\nif (resp && resp.error) {\n  return [{\n    json: {\n      ok: false,\n      tokenId: tokenRow.id,\n      tenantId: tokenRow.tenant_id,\n      igPageId: tokenRow.ig_page_id,\n      errorMsg: resp.error.message || JSON.stringify(resp.error),\n      errorCode: resp.error.code || null\n    }\n  }];\n}\n\nconst newToken = resp?.access_token;\nconst expiresInSec = Number(resp?.expires_in) || 0;\n\nif (!newToken) {\n  return [{\n    json: {\n      ok: false,\n      tokenId: tokenRow.id,\n      tenantId: tokenRow.tenant_id,\n      igPageId: tokenRow.ig_page_id,\n      errorMsg: 'Resposta sem access_token',\n      raw: JSON.stringify(resp).slice(0, 500)\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ok: true,\n    tokenId: tokenRow.id,\n    tenantId: tokenRow.tenant_id,\n    igPageId: tokenRow.ig_page_id,\n    newToken,\n    expiresInSec,\n    // Se expires_in não vier (token long-lived page não-expirante), assume 60 dias.\n    newExpiresAtISO: new Date(Date.now() + ((expiresInSec || 60 * 24 * 3600) * 1000)).toISOString()\n  }\n}];"
+      },
+      "id": "code-parse",
+      "name": "Parse response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "combinator": "and",
+          "conditions": [
+            { "id": "ok1", "leftValue": "={{ $json.ok }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
+          ]
+        },
+        "options": {}
+      },
+      "id": "if-success",
+      "name": "IF refresh OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE lia_meta_tokens\nSET access_token = $2,\n    expires_at = $3::timestamp,\n    last_refreshed_at = NOW(),\n    status = 'active'\nWHERE id = $1::uuid\nRETURNING id, ig_page_id, expires_at;",
+        "options": {
+          "queryReplacement": "={{ $json.tokenId }},{{ $json.newToken }},{{ $json.newExpiresAtISO }}"
+        }
+      },
+      "id": "pg-update-success",
+      "name": "Pg — Update success",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1920, 180],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO lia_audit_log (tenant_id, user_email, action, target, diff)\nVALUES ($1::uuid, 'system@lia.internal', 'meta_token_refreshed', $2, jsonb_build_object('new_expires_at', $3::text))\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ $('Parse response').item.json.tenantId }},{{ $('Parse response').item.json.igPageId }},{{ $('Parse response').item.json.newExpiresAtISO }}"
+        }
+      },
+      "id": "pg-audit-success",
+      "name": "Pg — Audit success",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2160, 180],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE lia_meta_tokens\nSET status = 'refresh_failed'\nWHERE id = $1::uuid\nRETURNING id, ig_page_id;",
+        "options": {
+          "queryReplacement": "={{ $json.tokenId }}"
+        }
+      },
+      "id": "pg-update-failed",
+      "name": "Pg — Update failed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1920, 460],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO lia_audit_log (tenant_id, user_email, action, target, diff)\nVALUES ($1::uuid, 'system@lia.internal', 'meta_token_refresh_failed', $2, jsonb_build_object('error', $3::text))\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ $('Parse response').item.json.tenantId }},{{ $('Parse response').item.json.igPageId }},{{ $('Parse response').item.json.errorMsg }}"
+        }
+      },
+      "id": "pg-audit-failed",
+      "name": "Pg — Audit failed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2160, 460],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      },
+      "continueOnFail": true
+    }
+  ],
+  "connections": {
+    "Cron — 3:00 UTC diário": { "main": [[{ "node": "Pg — Find expiring tokens", "type": "main", "index": 0 }]] },
+    "Pg — Find expiring tokens": { "main": [[{ "node": "IF há tokens", "type": "main", "index": 0 }]] },
+    "IF há tokens": { "main": [[{ "node": "Split (1 por vez)", "type": "main", "index": 0 }], []] },
+    "Split (1 por vez)": { "main": [[], [{ "node": "Graph — Exchange token", "type": "main", "index": 0 }]] },
+    "Graph — Exchange token": { "main": [[{ "node": "Parse response", "type": "main", "index": 0 }]] },
+    "Parse response": { "main": [[{ "node": "IF refresh OK", "type": "main", "index": 0 }]] },
+    "IF refresh OK": {
+      "main": [
+        [{ "node": "Pg — Update success", "type": "main", "index": 0 }],
+        [{ "node": "Pg — Update failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Pg — Update success": { "main": [[{ "node": "Pg — Audit success", "type": "main", "index": 0 }]] },
+    "Pg — Audit success": { "main": [[{ "node": "Split (1 por vez)", "type": "main", "index": 0 }]] },
+    "Pg — Update failed": { "main": [[{ "node": "Pg — Audit failed", "type": "main", "index": 0 }]] },
+    "Pg — Audit failed": { "main": [[{ "node": "Split (1 por vez)", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {},
+  "tags": [{ "name": "lia-saas" }]
+}

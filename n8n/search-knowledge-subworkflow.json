@@ -1,0 +1,124 @@
+{
+  "name": "Lia SaaS — Tool search_knowledge",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "jsonExample",
+        "jsonExample": "{\n  \"query\": \"exemplo de pergunta\",\n  \"tenantId\": \"00000000-0000-0000-0000-000000000000\"\n}"
+      },
+      "id": "trigger-input",
+      "name": "When executed by Agent",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"text-embedding-3-small\",\n  \"input\": {{ JSON.stringify($json.query || '') }}\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "embed-query",
+      "name": "OpenAI — Embed query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_OPENAI_CRED_ID",
+          "name": "OpenAI Lia SaaS"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "embeddingVec",
+              "value": "={{ '[' + $json.data[0].embedding.join(',') + ']' }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "tenantId",
+              "value": "={{ $('When executed by Agent').item.json.tenantId }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "query",
+              "value": "={{ $('When executed by Agent').item.json.query }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "prepare-query",
+      "name": "Prepare vector",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT content, 1 - (embedding <=> $1::vector) AS similarity\nFROM lia_knowledge_base\nWHERE tenant_id = $2::uuid\n  AND embedding IS NOT NULL\nORDER BY embedding <=> $1::vector\nLIMIT 5;",
+        "options": {
+          "queryReplacement": "={{ $json.embeddingVec }},{{ $json.tenantId }}"
+        }
+      },
+      "id": "vector-search",
+      "name": "Postgres — Vector search",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [960, 300],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CRED_ID",
+          "name": "Supabase Lia SaaS"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Agrega chunks em texto único para o agent\nconst items = $input.all();\nif (items.length === 0) {\n  return [{ json: { result: '(base de conhecimento vazia ou sem matches relevantes para essa query)' } }];\n}\nconst chunks = items\n  .filter(i => (i.json.similarity ?? 0) > 0.25)\n  .map((i, idx) => `[fonte ${idx + 1} — similaridade ${Number(i.json.similarity).toFixed(2)}]\\n${i.json.content}`)\n  .join('\\n\\n---\\n\\n');\nreturn [{ json: { result: chunks || '(nenhum chunk com similaridade mínima de 0.25)' } }];"
+      },
+      "id": "format-output",
+      "name": "Format result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 300]
+    }
+  ],
+  "connections": {
+    "When executed by Agent": {
+      "main": [[{ "node": "OpenAI — Embed query", "type": "main", "index": 0 }]]
+    },
+    "OpenAI — Embed query": {
+      "main": [[{ "node": "Prepare vector", "type": "main", "index": 0 }]]
+    },
+    "Prepare vector": {
+      "main": [[{ "node": "Postgres — Vector search", "type": "main", "index": 0 }]]
+    },
+    "Postgres — Vector search": {
+      "main": [[{ "node": "Format result", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {},
+  "tags": [{ "name": "lia-saas" }]
+}

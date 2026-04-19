@@ -1,0 +1,18 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  # Prisma engine binary pra runtime Linux do Netlify
+  PRISMA_CLI_BINARY_TARGETS = "rhel-openssl-3.0.x"
+  # Next gera rotas dinâmicas com Node runtime por padrão — ok.
+  NODE_VERSION = "20"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# webhooks precisam ser SSR (não cache estático)
+[[headers]]
+  for = "/api/*"
+  [headers.values]
+    Cache-Control = "no-store, max-age=0"

@@ -1,0 +1,40 @@
+{
+  "name": "Lia SaaS — Locks Cleanup (cron)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "cronExpression", "expression": "*/15 * * * *" }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Cron — cada 15 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH expired AS (\n  SELECT lock_key, tenant_id, contact_id, channel\n  FROM lia_conversation_locks\n  WHERE expires_at <= NOW()\n),\nconvos_to_unlock AS (\n  SELECT c.id\n  FROM lia_conversations c\n  JOIN expired e\n    ON c.tenant_id = e.tenant_id\n   AND c.contact_id = e.contact_id\n   AND c.channel = e.channel\n  WHERE c.status = 'human_takeover'\n),\nunlock_update AS (\n  UPDATE lia_conversations\n  SET status = 'active'\n  WHERE id IN (SELECT id FROM convos_to_unlock)\n  RETURNING id\n),\ndeleted AS (\n  DELETE FROM lia_conversation_locks\n  WHERE expires_at <= NOW()\n  RETURNING lock_key\n)\nSELECT\n  (SELECT COUNT(*) FROM deleted) AS locks_deleted,\n  (SELECT COUNT(*) FROM unlock_update) AS conversations_unlocked;",
+        "options": {}
+      },
+      "id": "pg-cleanup",
+      "name": "Pg — Cleanup locks + unlock convos",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [480, 300],
+      "credentials": {
+        "postgres": { "id": "REPLACE_WITH_POSTGRES_CRED_ID", "name": "Supabase Lia SaaS" }
+      }
+    }
+  ],
+  "connections": {
+    "Cron — cada 15 min": { "main": [[{ "node": "Pg — Cleanup locks + unlock convos", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {},
+  "tags": [{ "name": "lia-saas" }]
+}

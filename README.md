@@ -1,36 +1,45 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# A.I.nsta
 
-## Getting Started
+Agente de IA multi-tenant para Instagram Direct e WhatsApp. Next 16 + Prisma + Supabase + n8n.
 
-First, run the development server:
+## Stack
+
+- **Next 16** (App Router, Turbopack)
+- **Prisma 6.19** + **Supabase** (Postgres com pgvector pra RAG)
+- **n8n** em `webhook.agenciaart.com.br` (workflows IG/WA + crons)
+- **Uazapi** pra WhatsApp multi-instância
+- **OpenAI** (gpt-4.1-mini + text-embedding-3-small)
+
+## Setup
+
+Ver [`SETUP.md`](./SETUP.md) para passos detalhados.
+
+Quickstart:
 
 ```bash
+cp .env.example .env   # preenche as 14 vars
+npm install
+npm run db:push
+npm run check:stack    # valida env + Supabase + OpenAI + Uazapi + n8n
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Estrutura
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- `src/app/(app)/` — páginas do painel (dashboard, inbox, leads, agent, knowledge, campaigns, channels, settings)
+- `src/app/api/` — rotas API (webhooks IG/Uazapi, inbox takeover, instances, meta, knowledge, tenants)
+- `src/components/ui/` — componentes base (Button, Card, Input, Badge, Textarea, Label)
+- `src/components/layout/` — shell (SideNav, Topbar, PageShell)
+- `src/lib/` — prisma, auth, openai, uazapi, knowledge, prompt-composer
+- `n8n/` — 5 workflows JSON pra importar
+- `prisma/schema.prisma` — 14 tabelas `lia_*`
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Scripts
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Comando | Descrição |
+|---|---|
+| `npm run dev` | Dev server local |
+| `npm run build` | Build de produção (prisma generate + next build) |
+| `npm run db:push` | Aplica schema no Supabase |
+| `npm run check:stack` | Diagnóstico ao vivo da stack |
+| `npm run setup:uazapi -- --next-url=<url>` | Configura webhook Uazapi em massa |
