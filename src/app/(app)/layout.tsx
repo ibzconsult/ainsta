@@ -5,6 +5,10 @@ import { prisma } from '@/lib/prisma';
 import { SideNav } from '@/components/layout/SideNav';
 import { Topbar } from '@/components/layout/Topbar';
 
+// Todo o painel depende de sessão/cookies — força render dinâmico,
+// evita que `next build` tente prerenderar e chame Supabase sem env vars.
+export const dynamic = 'force-dynamic';
+
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const ctx = await getSessionContext();
 
